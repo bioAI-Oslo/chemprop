@@ -20,6 +20,7 @@ def get_loss_func(args: TrainArgs) -> Callable:
         "regression": {
             "mse": nn.MSELoss(reduction="none"),
             "bounded_mse": bounded_mse_loss,
+            "lds_mse": lds_mse_loss,
             "mve": normal_mve,
             "evidential": evidential_loss,
         },
@@ -82,6 +83,24 @@ def bounded_mse_loss(
 
     return nn.functional.mse_loss(predictions, targets, reduction="none")
 
+def lds_mse_loss(
+    predictions: torch.tensor,
+    targets: torch.tensor,
+    weights: torch.tensor,
+) -> torch.tensor:
+    """
+    Loss function for use with regression when some targets are presented as inequalities.
+
+    :param predictions: Model predictions with shape(batch_size, tasks).
+    :param targets: Target values with shape(batch_size, tasks).
+    :param weights: Target features weights with shape(batch_size, tasks, features).
+    :return: A tensor containing loss values of shape(batch_size, tasks).
+    """
+
+    loss = (predictions - targets) ** 2
+    loss *= weights.expand_as(loss)
+    loss = torch.mean(loss)
+    return loss
 
 def mcc_class_loss(
     predictions: torch.tensor,

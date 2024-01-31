@@ -16,8 +16,7 @@ from chemprop.data import set_cache_mol, empty_cache
 from chemprop.features import get_available_features_generators
 
 
-Metric = Literal['auc', 'prc-auc', 'rmse', 'mae', 'mse', 'r2', 'accuracy', 'cross_entropy', 'binary_cross_entropy', 'sid', 'wasserstein', 'f1', 'mcc', 'bounded_rmse', 'bounded_mae', 'bounded_mse',
-                'recall', 'precision','balanced_accuracy']
+Metric = Literal['auc', 'prc-auc', 'rmse', 'mae', 'mse', 'r2', 'accuracy', 'cross_entropy', 'binary_cross_entropy', 'sid', 'wasserstein', 'f1', 'mcc', 'bounded_rmse', 'lds_rmse', 'bounded_mae', 'bounded_mse']
 
 
 def get_checkpoint_paths(checkpoint_path: Optional[str] = None,
@@ -259,7 +258,7 @@ class TrainArgs(CommonArgs):
     """Name of the columns to ignore when :code:`target_columns` is not provided."""
     dataset_type: Literal['regression', 'classification', 'multiclass', 'spectra']
     """Type of dataset. This determines the default loss function used during training."""
-    loss_function: Literal['mse', 'bounded_mse', 'binary_cross_entropy', 'cross_entropy', 'mcc', 'sid', 'wasserstein', 'mve', 'evidential', 'dirichlet'] = None
+    loss_function: Literal['mse', 'bounded_mse', 'lds_mse', 'binary_cross_entropy', 'cross_entropy', 'mcc', 'sid', 'wasserstein', 'mve', 'evidential', 'dirichlet'] = None
     """Choice of loss function. Loss functions are limited to compatible dataset types."""
     multiclass_num_classes: int = 3
     """Number of classes when running multiclass classification."""
@@ -273,7 +272,7 @@ class TrainArgs(CommonArgs):
     """Path to weights for each molecule in the training data, affecting the relative weight of molecules in the loss function"""
     target_weights: List[float] = None
     """Weights associated with each target, affecting the relative weight of targets in the loss function. Must match the number of target columns."""
-    split_type: Literal['random', 'scaffold_balanced', 'predetermined', 'crossval', 'cv', 'cv-no-test', 'index_predetermined', 'random_with_repeated_smiles', 'molecular_weight'] = 'random'
+    split_type: Literal['random', 'scaffold_balanced', 'predetermined', 'crossval', 'cv', 'cv-no-test', 'index_predetermined', 'random_with_repeated_smiles'] = 'random'
     """Method of splitting the data into train/val/test."""
     split_sizes: List[float] = None
     """Split proportions for train/validation/test sets."""
@@ -470,7 +469,7 @@ class TrainArgs(CommonArgs):
     spectra_target_floor: float = 1e-8
     """Values in targets for dataset type spectra are replaced with this value, intended to be a small positive number used to enforce positive values."""
     evidential_regularization: float = 0
-    """Value used in regularization for evidential loss function. The default value recommended by Soleimany et al.(2021) is 0.2. 
+    """Value used in regularization for evidential loss function. The default value recommended by Soleimany et al.(2021) is 0.2.
     Optimal value is dataset-dependent; it is recommended that users test different values to find the best value for their model."""
     overwrite_default_atom_features: bool = False
     """
@@ -516,7 +515,7 @@ class TrainArgs(CommonArgs):
     @property
     def minimize_score(self) -> bool:
         """Whether the model should try to minimize the score metric or maximize it."""
-        return self.metric in {'rmse', 'mae', 'mse', 'cross_entropy', 'binary_cross_entropy', 'sid', 'wasserstein', 'bounded_mse', 'bounded_mae', 'bounded_rmse'}
+        return self.metric in {'rmse', 'mae', 'mse', 'cross_entropy', 'binary_cross_entropy', 'sid', 'wasserstein', 'bounded_mse', 'bounded_mae', 'bounded_rmse', 'lds_rmse'}
 
     @property
     def use_input_features(self) -> bool:
@@ -580,7 +579,7 @@ class TrainArgs(CommonArgs):
         to the additional bond features."
         """
         return not self.no_bond_descriptor_scaling
-    
+
     @property
     def shared_atom_bond_ffn(self) -> bool:
         """
@@ -699,6 +698,8 @@ class TrainArgs(CommonArgs):
                 self.metric = 'sid'
             elif self.dataset_type == 'regression' and self.loss_function == 'bounded_mse':
                 self.metric = 'bounded_mse'
+            elif self.dataset_type == 'regression' and self.loss_function == 'lds_mse':
+                self.metric = 'lds_rmse'
             elif self.dataset_type == 'regression':
                 self.metric = 'rmse'
             else:
@@ -709,7 +710,7 @@ class TrainArgs(CommonArgs):
                              f'Please only include it once.')
 
         for metric in self.metrics:
-            if not any([(self.dataset_type == 'classification' and metric in ['auc', 'prc-auc', 'accuracy', 'binary_cross_entropy', 'f1', 'mcc', 'recall', 'precision', 'balanced_accuracy', 'confusion_matrix']),
+            if not any([(self.dataset_type == 'classification' and metric in ['auc', 'prc-auc', 'accuracy', 'binary_cross_entropy', 'f1', 'mcc']),
                         (self.dataset_type == 'regression' and metric in ['rmse', 'mae', 'mse', 'r2', 'bounded_rmse', 'bounded_mae', 'bounded_mse']),
                         (self.dataset_type == 'multiclass' and metric in ['cross_entropy', 'accuracy', 'f1', 'mcc']),
                         (self.dataset_type == 'spectra' and metric in ['sid', 'wasserstein'])]):
@@ -887,7 +888,6 @@ class PredictArgs(CommonArgs):
         'classification',
         'dropout',
         'spectra_roundrobin',
-        'dirichlet',
     ] = None
     """The method of calculating uncertainty."""
     calibration_method: Literal['zscaling', 'tscaling', 'zelikman_interval', 'mve_weighting', 'platt', 'isotonic'] = None
@@ -1071,7 +1071,7 @@ class HyperoptArgs(TrainArgs):
             self.log_dir = self.save_dir
         if self.hyperopt_checkpoint_dir is None:
             self.hyperopt_checkpoint_dir = self.log_dir
-        
+
         # Set number of startup random trials
         if self.startup_random_iters is None:
             self.startup_random_iters = self.num_iters // 2

@@ -122,6 +122,9 @@ def train(
                 gt_target_batch = batch.gt_targets()  # shape(batch, tasks)
                 lt_target_batch = torch.tensor(lt_target_batch)
                 gt_target_batch = torch.tensor(gt_target_batch)
+            elif args.loss_function == "lds_mse":
+                lds_weights_batch = batch.lds_weights()
+                lds_weights_batch = torch.tensor(lds_weights_batch)
 
         # Run model
         model.zero_grad()
@@ -153,6 +156,8 @@ def train(
             if args.loss_function == "bounded_mse":
                 lt_target_batch = lt_target_batch.to(torch_device)
                 gt_target_batch = gt_target_batch.to(torch_device)
+            elif args.loss_function == "lds_mse":
+                lds_weights_batch = lds_weights_batch.to(torch_device)
 
         # Calculate losses
         if model.is_atom_bond_targets:
@@ -160,7 +165,7 @@ def train(
             for target, pred, target_weight, data_weight, mask in zip(targets, preds, target_weights, data_weights, masks):
                 if args.loss_function == "mcc" and args.dataset_type == "classification":
                     loss = loss_func(pred, target, data_weight, mask) * target_weight.squeeze(0)
-                elif args.loss_function == "bounded_mse":
+                elif args.loss_function == "bounded_mse" or args.loss_function == "lds_mse":
                     raise ValueError(f'Loss function "{args.loss_function}" is not supported with dataset type {args.dataset_type} in atomic/bond properties prediction.')
                 elif args.loss_function in ["binary_cross_entropy", "mse", "mve"]:
                     loss = loss_func(pred, target) * target_weight * data_weight * mask
@@ -201,6 +206,8 @@ def train(
                 loss = loss_func(preds, targets, masks) * target_weights * data_weights * masks
             elif args.loss_function == "bounded_mse":
                 loss = loss_func(preds, targets, lt_target_batch, gt_target_batch) * target_weights * data_weights * masks
+            elif args.loss_function == "lds_mse":
+                loss = loss_func(preds, targets, lds_weights_batch) * target_weights * data_weights * masks
             elif args.loss_function == "evidential":
                 loss = loss_func(preds, targets, args.evidential_regularization) * target_weights * data_weights * masks
             elif args.loss_function == "dirichlet":  # classification

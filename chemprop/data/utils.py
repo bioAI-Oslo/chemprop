@@ -30,7 +30,7 @@ def get_header(path: str) -> List[str]:
     :return: A list of strings containing the strings in the comma-separated header.
     """
     with open(path) as f:
-        header = next(csv.reader(f))
+        header = next(csv.reader(f, delimiter=';'))
 
     return header
 
@@ -60,6 +60,7 @@ def preprocess_smiles_columns(path: str,
             smiles_columns = [smiles_columns]
         if os.path.isfile(path):
             columns = get_header(path)
+            print(columns)
             if len(smiles_columns) != number_of_molecules:
                 raise ValueError('Length of smiles_columns must match number_of_molecules.')
             if any([smiles not in columns for smiles in smiles_columns]):
@@ -140,7 +141,7 @@ def get_mixed_task_names(path: str,
         target_names = [column for column in columns if column not in ignore_columns]
 
     with open(path) as f:
-        reader = csv.DictReader(f)
+        reader = csv.DictReader(f, delimiter=';')
         for row in reader:
             atom_target_names, bond_target_names, molecule_target_names = [], [], []
             smiles = [row[c] for c in smiles_columns]
@@ -164,7 +165,7 @@ def get_mixed_task_names(path: str,
                     is_bond_target = True
                 else:
                     raise ValueError('Unrecognized targets of column {column} in {path}.')
-                
+
                 if is_atom_target:
                     atom_target_names.append(column)
                 elif is_bond_target:
@@ -186,7 +187,7 @@ def get_data_weights(path: str) -> List[float]:
     """
     weights = []
     with open(path) as f:
-        reader = csv.reader(f)
+        reader = csv.reader(f, delimiter=';')
         next(reader)  # skip header row
         for line in reader:
             weights.append(float(line[0]))
@@ -230,7 +231,7 @@ def get_constraints(path: str,
         raw_constraints_data = np.transpose(raw_constraints_data)  # each is num_data x num_columns
     else:
         raw_constraints_data = None
-    
+
     return constraints_data, raw_constraints_data
 
 
@@ -260,9 +261,9 @@ def get_smiles(path: str,
 
     with open(path) as f:
         if header:
-            reader = csv.DictReader(f)
+            reader = csv.DictReader(f, delimiter=';')
         else:
-            reader = csv.reader(f)
+            reader = csv.reader(f, delimiter=';')
             smiles_columns = list(range(number_of_molecules))
 
         smiles = [[row[c] for c in smiles_columns] for row in reader]
@@ -465,7 +466,7 @@ def get_data(path: str,
 
     # Load data
     with open(path) as f:
-        reader = csv.DictReader(f)
+        reader = csv.DictReader(f, delimiter=';')
         fieldnames = reader.fieldnames
         if any([c not in fieldnames for c in smiles_columns]):
             raise ValueError(f'Data file did not contain all provided smiles columns: {smiles_columns}. Data file field names are: {fieldnames}')
@@ -647,7 +648,7 @@ def get_inequality_targets(path: str, target_columns: List[str] = None) -> List[
     lt_targets = []
 
     with open(path) as f:
-        reader = csv.DictReader(f)
+        reader = csv.DictReader(f, delimiter=';')
         for line in reader:
             values = [line[col] for col in target_columns]
             gt_targets.append(['>' in val for val in values])
@@ -656,6 +657,7 @@ def get_inequality_targets(path: str, target_columns: List[str] = None) -> List[
                 raise ValueError(f'A target value in csv file {path} contains both ">" and "<" symbols. Inequality targets must be on one edge and not express a range.')
 
     return gt_targets, lt_targets
+
 
 def split_data(data: MoleculeDataset,
                split_type: str = 'random',
@@ -818,24 +820,7 @@ def split_data(data: MoleculeDataset,
         test = [data[i] for i in indices[train_val_size:]]
 
         return MoleculeDataset(train), MoleculeDataset(val), MoleculeDataset(test)
-    elif split_type == 'molecular_weight':
-        train_size, val_size, test_size = [int(size * len(data)) for size in sizes]
 
-        sorted_data = sorted(data._data, key=lambda x: x.max_molwt, reverse=False)
-        indices = list(range(len(sorted_data)))
-
-        train_end_idx = int(train_size)
-        val_end_idx = int(train_size + val_size)
-        train_indices = indices[:train_end_idx]
-        val_indices = indices[train_end_idx:val_end_idx]
-        test_indices = indices[val_end_idx:]
-
-        # Create MoleculeDataset for each split
-        train = MoleculeDataset([sorted_data[i] for i in train_indices])
-        val = MoleculeDataset([sorted_data[i] for i in val_indices])
-        test = MoleculeDataset([sorted_data[i] for i in test_indices])
-
-        return train, val, test
     else:
         raise ValueError(f'split_type "{split_type}" not supported.')
 
@@ -916,7 +901,7 @@ def validate_data(data_path: str) -> Set[str]:
     header = get_header(data_path)
 
     with open(data_path) as f:
-        reader = csv.reader(f)
+        reader = csv.reader(f, delimiter=';')
         next(reader)  # Skip header
 
         smiles, targets = [], []

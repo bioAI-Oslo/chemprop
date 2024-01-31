@@ -5,7 +5,7 @@ from typing import Dict, List
 
 import numpy as np
 import warnings
-warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning) 
+warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning)
 import pandas as pd
 from tensorboardX import SummaryWriter
 import torch
@@ -146,6 +146,8 @@ def run_training(args: TrainArgs,
     else:
         bond_descriptor_scaler = None
 
+
+
     args.train_data_size = len(train_data)
 
     debug(f'Total size = {len(data):,} | '
@@ -196,6 +198,9 @@ def run_training(args: TrainArgs,
 
     # Get loss function
     loss_func = get_loss_func(args)
+
+    if args.loss_function == 'lds_mse':
+        train_data.calculate_lds_weights()
 
     # Set up test set evaluation
     test_smiles, test_targets = test_data.smiles(), test_data.targets()

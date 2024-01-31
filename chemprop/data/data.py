@@ -6,6 +6,9 @@ from typing import Dict, Iterator, List, Optional, Union, Tuple
 import numpy as np
 from torch.utils.data import DataLoader, Dataset, Sampler
 from rdkit import Chem
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal.windows import triang
+from scipy.ndimage import convolve1d
 
 from .scaler import StandardScaler, AtomBondScaler
 from chemprop.features import get_features_generator
@@ -61,8 +64,9 @@ class MoleculeDatapoint:
                  bond_targets: List[Optional[float]] = None,
                  row: OrderedDict = None,
                  data_weight: float = None,
-                 gt_targets: List[List[bool]] = None,
-                 lt_targets: List[List[bool]] = None,
+                 gt_targets: List[bool] = None,
+                 lt_targets: List[bool] = None,
+                 lds: bool = False,
                  features: np.ndarray = None,
                  features_generator: List[str] = None,
                  phase_features: List[float] = None,
@@ -115,6 +119,7 @@ class MoleculeDatapoint:
         self.is_explicit_h_list = [is_explicit_h(x) for x in self.is_mol_list]
         self.is_adding_hs_list = [is_adding_hs(x) for x in self.is_mol_list]
         self.is_keeping_atom_map_list = [is_keeping_atom_map(x) for x in self.is_mol_list]
+        self.lds_weights = None
 
         if data_weight is not None:
             self.data_weight = data_weight
@@ -144,8 +149,8 @@ class MoleculeDatapoint:
                         if m[0] is not None and m[1] is not None and m[0].GetNumHeavyAtoms() > 0:
                             self.features.extend(features_generator(m[0]))
                         elif m[0] is not None and m[1] is not None and m[0].GetNumHeavyAtoms() == 0:
-                            self.features.extend(np.zeros(len(features_generator(Chem.MolFromSmiles('C')))))   
-                    
+                            self.features.extend(np.zeros(len(features_generator(Chem.MolFromSmiles('C')))))
+
 
             self.features = np.array(self.features)
 
@@ -221,14 +226,6 @@ class MoleculeDatapoint:
         :return: A list of bond types for each molecule.
         """
         return [[b.GetBondTypeAsDouble() for b in self.mol[i].GetBonds()] for i in range(self.number_of_molecules)]
-    @property
-    def max_molwt(self) -> float:
-        """
-        Gets the maximum molecular weight among all the molecules in the :class:`MoleculeDatapoint`.
-
-        :return: The maximum molecular weight.
-        """
-        return max(Chem.rdMolDescriptors.CalcExactMolWt(mol) for mol in self.mol)
 
     def set_features(self, features: np.ndarray) -> None:
         """
@@ -237,6 +234,14 @@ class MoleculeDatapoint:
         :param features: A 1D numpy array of features for the molecule.
         """
         self.features = features
+
+    def set_lds_weights(self, lds_weights: np.ndarray) -> None:
+        """
+        Sets the LDS weight of the features of the molecule.
+
+        :param lds_weights: A 1D numpy array of features for the molecule.
+        """
+        self.lds_weights = lds_weights
 
     def set_atom_descriptors(self, atom_descriptors: np.ndarray) -> None:
         """
@@ -518,6 +523,17 @@ class MoleculeDataset(Dataset):
 
         return [d.data_weight for d in self._data]
 
+    def lds_weights(self) -> List[List[float]]:
+        """
+        Returns the loss weighting associated with feature of each datapoint.
+        """
+        # labels = [d.targets for d in self._data]
+        # labels = [targets for targets in self._data.targets()]
+        if self._data[0].lds_weights is None:
+            return [[1. for _ in d.targets] for d in self._data]
+
+        return [d.lds_weights for d in self._data] # prepare_lds_weights(self, 'sqrt_inv', lds=True)
+
     def atom_bond_data_weights(self) -> List[List[float]]:
         """
         Returns the loss weighting associated with each datapoint for atomic/bond properties prediction.
@@ -527,7 +543,7 @@ class MoleculeDataset(Dataset):
         atom_bond_data_weights = [[] for _ in targets[0]]
         for i, tb in enumerate(targets):
             weight = data_weights[i]
-            for j, x in enumerate(tb): 
+            for j, x in enumerate(tb):
                 atom_bond_data_weights[j] += [1. * weight] * len(x)
 
         return atom_bond_data_weights
@@ -539,7 +555,7 @@ class MoleculeDataset(Dataset):
         :return: A list of lists of floats (or None) containing the targets.
         """
         return [d.targets for d in self._data]
-    
+
     def mask(self) -> List[List[bool]]:
         """
         Returns whether the targets associated with each molecule and task are present.
@@ -560,7 +576,7 @@ class MoleculeDataset(Dataset):
     def gt_targets(self) -> List[np.ndarray]:
         """
         Returns indications of whether the targets associated with each molecule are greater-than inequalities.
-        
+
         :return: A list of lists of booleans indicating whether the targets in those positions are greater-than inequality targets.
         """
         if not hasattr(self._data[0], 'gt_targets'):
@@ -571,7 +587,7 @@ class MoleculeDataset(Dataset):
     def lt_targets(self) -> List[np.ndarray]:
         """
         Returns indications of whether the targets associated with each molecule are less-than inequalities.
-        
+
         :return: A list of lists of booleans indicating whether the targets in those positions are less-than inequality targets.
         """
         if not hasattr(self._data[0], 'lt_targets'):
@@ -703,6 +719,33 @@ class MoleculeDataset(Dataset):
         self.set_targets(scaled_targets)
 
         return scaler
+
+    def calculate_lds_weights(self) -> None:
+        """
+        Normalizes the targets of the dataset using a :class:`~chemprop.data.StandardScaler`.
+        The :class:`~chemprop.data.StandardScaler` subtracts the mean and divides by the standard deviation
+        for each task independently.
+        This should only be used for regression datasets.
+        :return: A :class:`~chemprop.data.StandardScaler` fitted to the targets.
+        """
+        targets = [d.raw_targets for d in self._data]
+        lds_weights = prepare_lds_weights(targets, 'sqrt_inv', lds=True)
+        self.set_lds_weights(lds_weights)
+
+    def set_lds_weights(self, lds_weights: List[List[Optional[float]]]) -> None:
+        """
+        Sets the LDS weights of targets for each molecule in the dataset. Assumes the targets are aligned with the datapoints.
+
+        :param targets: A list of lists of floats (or None) containing targets for each molecule. This must be the
+                        same length as the underlying dataset.
+        """
+        if not len(self._data) == len(lds_weights):
+            raise ValueError(
+                "number of molecules and LDS weights must be of same length! "
+                f"num molecules: {len(self._data)}, num targets: {len(lds_weights)}"
+            )
+        for i in range(len(self._data)):
+            self._data[i].set_lds_weights(lds_weights[i])
 
     def normalize_atom_bond_targets(self) -> AtomBondScaler:
         """
@@ -913,6 +956,18 @@ class MoleculeDataLoader(DataLoader):
         return [self._dataset[index].targets for index in self._sampler]
 
     @property
+    def lds_weights(self) -> List[List[float]]:
+        """
+        Returns the targets associated with each molecule.
+
+        :return: A list of lists of floats (or None) containing the targets.
+        """
+        if self._class_balance or self._shuffle:
+            raise ValueError('Cannot safely extract targets when class balance or shuffle are enabled.')
+
+        return [self._dataset[index].targets for index in self._sampler]
+
+    @property
     def gt_targets(self) -> List[List[Optional[bool]]]:
         """
         Returns booleans for whether each target is an inequality rather than a value target, associated with each molecule.
@@ -921,7 +976,7 @@ class MoleculeDataLoader(DataLoader):
         """
         if self._class_balance or self._shuffle:
             raise ValueError('Cannot safely extract targets when class balance or shuffle are enabled.')
-        
+
         if not hasattr(self._dataset[0],'gt_targets'):
             return None
 
@@ -952,7 +1007,7 @@ class MoleculeDataLoader(DataLoader):
         r"""Creates an iterator which returns :class:`MoleculeDataset`\ s"""
         return super(MoleculeDataLoader, self).__iter__()
 
-    
+
 def make_mols(smiles: List[str], reaction_list: List[bool], keep_h_list: List[bool], add_h_list: List[bool], keep_atom_map_list: List[bool]):
     """
     Builds a list of RDKit molecules (or a list of tuples of molecules if reaction is True) for a list of smiles.
@@ -972,3 +1027,161 @@ def make_mols(smiles: List[str], reaction_list: List[bool], keep_h_list: List[bo
             mol.append(SMILES_TO_MOL[s] if s in SMILES_TO_MOL else make_mol(s, keep_h, add_h, keep_atom_map))
     return mol
 
+def get_lds_kernel_window(kernel: str, ks: int, sigma: float):
+    assert kernel in ['gaussian', 'triang', 'laplace']
+    half_ks = (ks - 1) // 2
+    if kernel == 'gaussian':
+        base_kernel = [0.] * half_ks + [1.] + [0.] * half_ks
+        kernel_window = gaussian_filter1d(base_kernel, sigma=sigma) / max(gaussian_filter1d(base_kernel, sigma=sigma))
+    elif kernel == 'triang':
+        kernel_window = triang(ks)
+    else:
+        laplace = lambda x: np.exp(-abs(x) / sigma) / (2. * sigma)
+        kernel_window = list(map(laplace, np.arange(-half_ks, half_ks + 1))) / max(map(laplace, np.arange(-half_ks, half_ks + 1)))
+
+    return kernel_window
+
+def get_bin_idx(label, bins_edges):
+    bin_idx = len(bins_edges) - 2
+    bins_edges_mask = bins_edges > label
+    if np.any(bins_edges_mask):
+        bin_idx = np.where(bins_edges_mask)[0][0] - 1
+
+    return bin_idx
+
+def prepare_lds_weights_old(data: MoleculeDatapoint, reweight: str, max_target: float = 121,
+                        lds: bool = False, lds_kernel: str = 'gaussian',
+                        lds_ks: int = 5, lds_sigma: float = 2):
+    assert reweight in {'none', 'inverse', 'sqrt_inv'}
+    assert reweight != 'none' if lds else True, \
+        "Set reweight to \'sqrt_inv\' (default) or \'inverse\' when using LDS"
+
+
+    value_dict = {x: 0 for x in range(max_target)}
+    labels = [targets for targets in data.targets()]
+
+    value_lst, bins_edges = np.histogram(labels, bins=max_target)
+    bin_idx_labels = [get_bin_idx(label, bins_edges) for label in labels]
+    print("bin_idx_labels", bin_idx_labels)
+
+    # mbr
+    for label in labels:
+        value_dict[min(max_target - 1, int(label))] += 1
+    if reweight == 'sqrt_inv':
+        value_dict = {k: np.sqrt(v) for k, v in value_dict.items()}
+    elif reweight == 'inverse':
+        value_dict = {k: np.clip(v, 5, 1000) for k, v in value_dict.items()}  # clip weights for inverse re-weight
+    num_per_label = [value_dict[min(max_target - 1, int(label))] for label in labels]
+    if not len(num_per_label) or reweight == 'none':
+        return None
+    print(f"Using re-weighting: [{reweight.upper()}]")
+
+    if lds:
+        lds_kernel_window = get_lds_kernel_window(lds_kernel, lds_ks, lds_sigma)
+        print(f'Using LDS: [{lds_kernel.upper()}] ({lds_ks}/{lds_sigma})')
+        smoothed_value = convolve1d(
+            np.asarray([v for _, v in value_dict.items()]), weights=lds_kernel_window, mode='constant')
+        num_per_label = [smoothed_value[min(max_target - 1, int(label))] for label in labels]
+
+    weights = [np.float32(1 / x) for x in num_per_label]
+    scaling = len(weights) / np.sum(weights)
+    weights = [scaling * x for x in weights]
+    return weights
+
+# def prepare_lds_weights(data: MoleculeDataset, reweight: str, max_target: int = 121,
+#                         lds: bool = False, lds_kernel: str = 'gaussian',
+#                         lds_ks: int = 5, lds_sigma: float = 2):
+def prepare_lds_weights(data: List[List[Optional[float]]], reweight: str, max_target: int = 121,
+                        lds: bool = False, lds_kernel: str = 'gaussian',
+                        lds_ks: int = 5, lds_sigma: float = 2) -> np.ndarray:
+    assert reweight in {'none', 'inverse', 'sqrt_inv'}
+    assert reweight != 'none' if lds else True, \
+        "Set reweight to \'sqrt_inv\' (default) or \'inverse\' when using LDS"
+
+    #labels = [targets for targets in data.targets()]
+    labels = data
+
+    max_feature_number = max([len(label) for label in labels])
+    feature_list = [[] for _ in range(max_feature_number)]
+    feature_list_full = [[] for _ in range(max_feature_number)]
+
+    for label in labels:
+        for i, feature in enumerate(label):
+            feature_list_full[i].append(feature)
+            if feature is not None:
+                feature_list[i].append(feature)
+    # labels = np.array(labels)
+    # print("len(labels)", len(labels))
+    # print("len(feature_list)", len(feature_list))
+
+    value_dict_list = [{x: 0 for x in range(max_target)} for _ in range(max_feature_number)]
+    weight_list = []
+
+    # print("len(value_dict_list)", len(value_dict_list))
+    for i in range(len(value_dict_list)):
+        # print("feature_list[i]", feature_list[i])
+        value_lst, bins_edges = np.histogram(feature_list[i], bins=max_target)
+        bin_idx_labels = [get_bin_idx(feature, bins_edges) for feature in feature_list[i]]
+        # print("bin_idx_labels", bin_idx_labels)
+
+        # mbr
+        for label in bin_idx_labels:
+            value_dict_list[i][min(max_target - 1, int(label))] += 1
+        if reweight == 'sqrt_inv':
+            value_dict_list[i] = {k: np.sqrt(v) for k, v in value_dict_list[i].items()}
+            # print("value_dict_list[i]", value_dict_list[i])
+        elif reweight == 'inverse':
+            value_dict_list[i] = {k: np.clip(v, 5, 1000) for k, v in value_dict_list[i].items()}  # clip weights for inverse re-weight
+        num_per_label = [value_dict_list[i][min(max_target - 1, int(label))] for label in bin_idx_labels]
+        if not len(num_per_label) or reweight == 'none':
+            return None
+        # print(f"Using re-weighting: [{reweight.upper()}]")
+
+        if lds:
+            lds_kernel_window = get_lds_kernel_window(lds_kernel, lds_ks, lds_sigma)
+            # print(f'Using LDS: [{lds_kernel.upper()}] ({lds_ks}/{lds_sigma})')
+            smoothed_value = convolve1d(
+                np.asarray([v for _, v in value_dict_list[i].items()]), weights=lds_kernel_window, mode='constant')
+
+            num_per_label = [smoothed_value[min(max_target - 1, int(label))] for label in bin_idx_labels]
+
+        weights = [np.float32(1 / x) for x in num_per_label]
+        scaling = len(weights) / np.sum(weights)
+        weights = [scaling * x for x in weights]
+        # print(i, "len(weights)", len(weights))
+        weights_full = []
+        idx_feat_adjust = 0
+        for idx_feat, feature in enumerate(feature_list_full[i]):
+            weight = weights[idx_feat - idx_feat_adjust] if feature is not None else 0.0
+            # print("weight, feature", weight, feature)
+            weights_full.append(weight)
+            if feature is None:
+                idx_feat_adjust += 1
+        # print(i, "len(weights_full)", len(weights_full))
+        # print("weights_full", weights_full)
+        # print("feature_list_full[i]", feature_list_full[i])
+        weight_list.append(weights_full)
+
+    # weight_list_labels = [[0 for _ in range(max_feature_number)] for _ in range(len(labels))]
+    # for i in range(len(feature_list)):
+    #     feature = feature_list[i]
+    #     jj = 0
+    #     for j in range(len(feature)):
+    #         weight = weight_list[i][j] if labels[j+jj][i] is not None else None
+    #         weight_list_labels[j+jj][i] = weight
+    #         jj += 1
+
+    weight_list_labels = [[] for _ in range(len(labels))]
+    for weights in weight_list:
+        for i, weight in enumerate(weights):
+            weight_list_labels[i].append(weight)
+    # for iw, w in enumerate(weight_list_labels):
+        # print(iw, "len(weight_list_labels), len(weight_list_labels[0])", len(weight_list_labels), len(w))
+
+    return np.asarray(weight_list_labels)
+
+
+
+    # weight_arr = np.asarray(weight_list)
+    # print("weight_arr.shape", weight_arr.shape)
+    # return np.transpose(weight_arr)
