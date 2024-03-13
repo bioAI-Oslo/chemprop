@@ -639,7 +639,7 @@ def save_smiles_splits(
 
     with open(data_path) as f:
         f = open(data_path)
-        reader = csv.DictReader(f)
+        reader = csv.DictReader(f, delimiter=';')
 
         indices_by_smiles = {}
         for i, row in enumerate(tqdm(reader)):
@@ -661,13 +661,13 @@ def save_smiles_splits(
         if extension_sets == {'.csv'}:
             for feat_path in features_path:
                 with open(feat_path, "r") as f:
-                    reader = csv.reader(f)
+                    reader = csv.reader(f, delimiter=';')
                     feat_header = next(reader)
                     features_header.extend(feat_header)
 
     if constraints_path is not None:
         with open(constraints_path, "r") as f:
-            reader = csv.reader(f)
+            reader = csv.reader(f, delimiter=';')
             constraints_header = next(reader)
 
     all_split_indices = []
@@ -676,7 +676,7 @@ def save_smiles_splits(
             continue
 
         with open(os.path.join(save_dir, f"{name}_smiles.csv"), "w") as f:
-            writer = csv.writer(f)
+            writer = csv.writer(f, delimiter=';')
             if smiles_columns[0] == "":
                 writer.writerow(["smiles"])
             else:
@@ -685,7 +685,7 @@ def save_smiles_splits(
                 writer.writerow(smiles)
 
         with open(os.path.join(save_dir, f"{name}_full.csv"), "w") as f:
-            writer = csv.writer(f)
+            writer = csv.writer(f, delimiter=';')
             writer.writerow(smiles_columns + task_names)
             dataset_targets = dataset.targets()
             for i, smiles in enumerate(dataset.smiles()):
@@ -696,7 +696,7 @@ def save_smiles_splits(
             dataset_features = dataset.features()
             if extension_sets == {'.csv'}:
                 with open(os.path.join(save_dir, f"{name}_features.csv"), "w") as f:
-                    writer = csv.writer(f)
+                    writer = csv.writer(f, delimiter=';')
                     writer.writerow(features_header)
                     writer.writerows(dataset_features)
             else:
@@ -705,7 +705,7 @@ def save_smiles_splits(
         if constraints_path is not None:
             dataset_constraints = [d.raw_constraints for d in dataset._data]
             with open(os.path.join(save_dir, f"{name}_constraints.csv"), "w") as f:
-                writer = csv.writer(f)
+                writer = csv.writer(f, delimiter=';')
                 writer.writerow(constraints_header)
                 writer.writerows(dataset_constraints)
 
@@ -730,7 +730,7 @@ def save_smiles_splits(
             data_weights = dataset.data_weights()
             if any([w != 1 for w in data_weights]):
                 with open(os.path.join(save_dir, f"{name}_weights.csv"), "w") as f:
-                    writer = csv.writer(f)
+                    writer = csv.writer(f, delimiter=';')
                     writer.writerow(["data weights"])
                     for weight in data_weights:
                         writer.writerow([weight])
